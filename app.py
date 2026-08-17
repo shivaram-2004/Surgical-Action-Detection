@@ -24,7 +24,7 @@ st.set_page_config(
 
 # ── Theme toggle state ──
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = True
+    st.session_state.dark_mode = False
 
 # ── Custom CSS ──
 def get_css(dark):
