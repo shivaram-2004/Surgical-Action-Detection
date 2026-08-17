@@ -1,0 +1,463 @@
+
+'''# ============================================================
+# app.py — MESAD Surgical Action Detection
+# Save this file and run: streamlit run app.py
+# ============================================================
+import streamlit as st
+import cv2
+import numpy as np
+from PIL import Image
+import tempfile
+import os
+import time
+from pathlib import Path
+
+# ── Page config ──
+st.set_page_config(
+    page_title="MESAD — Surgical Action Detection",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ── Custom CSS ──
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif;
+}
+
+.main { background: #0a0e1a; }
+
+[data-testid="stAppViewContainer"] {
+    background: #0a0e1a;
+    color: #e8eaf0;
+}
+
+[data-testid="stSidebar"] {
+    background: #0f1525;
+    border-right: 1px solid #1e2d4a;
+}
+
+.stButton > button {
+    background: #1a56db;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.6rem 1.5rem;
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 500;
+    font-size: 14px;
+    width: 100%;
+    transition: background 0.2s;
+}
+.stButton > button:hover { background: #1e64f0; }
+
+.metric-card {
+    background: #0f1525;
+    border: 1px solid #1e2d4a;
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 0.75rem;
+}
+.metric-card .label {
+    font-size: 11px;
+    color: #5a6a8a;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-family: 'DM Mono', monospace;
+    margin-bottom: 4px;
+}
+.metric-card .value {
+    font-size: 28px;
+    font-weight: 600;
+    color: #e8eaf0;
+    font-family: 'DM Mono', monospace;
+}
+.metric-card .sub {
+    font-size: 12px;
+    color: #3a7bd5;
+    margin-top: 2px;
+}
+
+.detection-badge {
+    display: inline-block;
+    background: #1a2540;
+    border: 1px solid #1e2d4a;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin: 4px;
+    font-size: 13px;
+    font-family: 'DM Mono', monospace;
+    color: #e8eaf0;
+}
+.detection-badge .conf {
+    color: #3a7bd5;
+    margin-left: 6px;
+}
+
+.header-title {
+    font-size: 32px;
+    font-weight: 600;
+    color: #e8eaf0;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+}
+.header-sub {
+    font-size: 14px;
+    color: #5a6a8a;
+    font-family: 'DM Mono', monospace;
+    margin-bottom: 2rem;
+}
+
+.section-label {
+    font-size: 11px;
+    color: #5a6a8a;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: 'DM Mono', monospace;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #1e2d4a;
+}
+
+.class-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid #0f1525;
+    font-size: 13px;
+}
+.class-row .cls-name { color: #a0aec0; font-family: 'DM Mono', monospace; font-size: 12px; }
+.conf-bar-wrap { flex: 1; margin: 0 12px; height: 4px; background: #1a2540; border-radius: 2px; }
+.conf-bar { height: 4px; border-radius: 2px; background: #1a56db; }
+.conf-val { color: #3a7bd5; font-family: 'DM Mono', monospace; font-size: 12px; min-width: 40px; text-align: right; }
+
+div[data-testid="stImage"] img { border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Load model ──
+@st.cache_resource
+def load_model(model_path):
+    from ultralytics import YOLO
+    return YOLO(model_path)
+
+# ── Class names ──
+CLASS_NAMES = [
+    'BaggingProstate', 'BladderAnastomosis', 'BladderNeckDissection',
+    'ClippingBladderNeck', 'ClippingSeminalVesicle', 'ClippingTissue',
+    'ClippingVasDeferens', 'CuttingMesocolon', 'CuttingProstate',
+    'CuttingSeminalVesicle', 'CuttingThread', 'CuttingTissue',
+    'CuttingVasDeferens', 'GraspingCatheter', 'MovingDownBladder',
+    'PassingNeedle', 'PullingBladderNeck', 'PullingProstate',
+    'PullingSeminalVesicle', 'PullingTissue', 'PullingVasDeferens',
+    'SuckingBlood', 'SuckingSmoke', 'UrethraDissection'
+]
+
+# ── Sidebar ──
+with st.sidebar:
+    st.markdown('<div class="section-label">Model</div>', unsafe_allow_html=True)
+
+    model_path = st.text_input(
+        "Weights path",
+        value="best_combined_s.pt",
+        label_visibility="collapsed"
+    )
+
+    st.markdown('<div class="section-label" style="margin-top:1rem">Settings</div>',
+                unsafe_allow_html=True)
+
+    conf_thresh = st.slider("Confidence threshold", 0.10, 0.90, 0.25, 0.05)
+    iou_thresh  = st.slider("IoU threshold",         0.10, 0.90, 0.45, 0.05)
+    show_labels = st.checkbox("Show labels",  value=True)
+    show_conf   = st.checkbox("Show confidence", value=True)
+
+    st.markdown('<div class="section-label" style="margin-top:1.5rem">Model info</div>',
+                unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Architecture</div>
+        <div class="value" style="font-size:16px">YOLOv8s</div>
+        <div class="sub">Combined dataset</div>
+    </div>
+    <div class="metric-card">
+        <div class="label">Classes</div>
+        <div class="value">{len(CLASS_NAMES)}</div>
+        <div class="sub">Surgical actions</div>
+    </div>
+    <div class="metric-card">
+        <div class="label">mAP@0.5</div>
+        <div class="value">0.146</div>
+        <div class="sub">Step 4 baseline</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Header ──
+st.markdown("""
+<div class="header-title">MESAD — Surgical Action Detection</div>
+<div class="header-sub">Multi-domain endoscopic surgical action recognition · YOLOv8s · 24 classes</div>
+""", unsafe_allow_html=True)
+
+# ── Load model ──
+model = None
+if os.path.exists(model_path):
+    with st.spinner("Loading model..."):
+        model = load_model(model_path)
+    st.success(f"Model loaded: `{model_path}`")
+else:
+    st.error(f"Model not found at `{model_path}` — update the path in the sidebar")
+    st.stop()
+
+# ── Tabs ──
+tab1, tab2, tab3 = st.tabs(["Image", "Video", "Batch"])
+
+# ============================================================
+# TAB 1 — Single image
+# ============================================================
+with tab1:
+    col1, col2 = st.columns([1, 1], gap="large")
+
+    with col1:
+        st.markdown('<div class="section-label">Input</div>', unsafe_allow_html=True)
+        uploaded = st.file_uploader(
+            "Upload surgical frame",
+            type=["jpg","jpeg","png"],
+            label_visibility="collapsed"
+        )
+
+        if uploaded:
+            img = Image.open(uploaded).convert("RGB")
+            st.image(img, use_column_width=True)
+
+    with col2:
+        st.markdown('<div class="section-label">Detection result</div>',
+                    unsafe_allow_html=True)
+
+        if uploaded:
+            img_np  = np.array(img)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+            with st.spinner("Running inference..."):
+                t0      = time.time()
+                results = model.predict(
+                    img_bgr,
+                    conf       = conf_thresh,
+                    iou        = iou_thresh,
+                    verbose    = False,
+                    show_labels= show_labels,
+                    show_conf  = show_conf,
+                )
+                elapsed = (time.time() - t0) * 1000
+
+            annotated = results[0].plot(
+                labels = show_labels,
+                conf   = show_conf,
+                line_width = 2,
+            )
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            st.image(annotated_rgb, use_column_width=True)
+
+            # Detection summary
+            boxes = results[0].boxes
+            st.markdown(f"""
+            <div style="display:flex;gap:10px;margin:1rem 0;">
+              <div class="metric-card" style="flex:1">
+                <div class="label">Detections</div>
+                <div class="value">{len(boxes)}</div>
+              </div>
+              <div class="metric-card" style="flex:1">
+                <div class="label">Inference</div>
+                <div class="value" style="font-size:20px">{elapsed:.0f}ms</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if len(boxes) > 0:
+                st.markdown('<div class="section-label">Detected actions</div>',
+                            unsafe_allow_html=True)
+                for box in sorted(boxes, key=lambda b: float(b.conf[0]), reverse=True):
+                    cls_id  = int(box.cls[0])
+                    conf_v  = float(box.conf[0])
+                    cls_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) \
+                               else f"class_{cls_id}"
+                    bar_w = int(conf_v * 100)
+                    st.markdown(f"""
+                    <div class="class-row">
+                        <span class="cls-name">{cls_name}</span>
+                        <div class="conf-bar-wrap">
+                            <div class="conf-bar" style="width:{bar_w}%"></div>
+                        </div>
+                        <span class="conf-val">{conf_v:.2f}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No detections above confidence threshold")
+        else:
+            st.markdown("""
+            <div style="height:300px;display:flex;align-items:center;
+                        justify-content:center;border:1px dashed #1e2d4a;
+                        border-radius:10px;color:#5a6a8a;font-size:14px;">
+                Upload an image to see detections
+            </div>
+            """, unsafe_allow_html=True)
+
+# ============================================================
+# TAB 2 — Video
+# ============================================================
+with tab2:
+    col1, col2 = st.columns([1,1], gap="large")
+
+    with col1:
+        st.markdown('<div class="section-label">Input video</div>',
+                    unsafe_allow_html=True)
+        video_file = st.file_uploader(
+            "Upload surgical video",
+            type=["mp4","avi","mov"],
+            label_visibility="collapsed"
+        )
+
+        if video_file:
+            st.video(video_file)
+
+    with col2:
+        st.markdown('<div class="section-label">Processed output</div>',
+                    unsafe_allow_html=True)
+
+        if video_file:
+            if st.button("Run detection on video"):
+                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_in:
+                    tmp_in.write(video_file.read())
+                    tmp_in_path = tmp_in.name
+
+                tmp_out_path = tmp_in_path.replace('.mp4', '_out.mp4')
+
+                cap = cv2.VideoCapture(tmp_in_path)
+                w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS) or 25
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+                out = cv2.VideoWriter(
+                    tmp_out_path,
+                    cv2.VideoWriter_fourcc(*'mp4v'),
+                    fps, (w, h)
+                )
+
+                progress = st.progress(0)
+                status   = st.empty()
+                frame_n  = 0
+                action_counts = {}
+
+                while True:
+                    ret, frame = cap.read()
+                    if not ret: break
+
+                    results   = model.predict(frame, conf=conf_thresh,
+                                              iou=iou_thresh, verbose=False)
+                    annotated = results[0].plot(labels=show_labels,
+                                               conf=show_conf, line_width=2)
+                    out.write(annotated)
+
+                    for box in results[0].boxes:
+                        cls_id = int(box.cls[0])
+                        name   = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) \
+                                 else f"class_{cls_id}"
+                        action_counts[name] = action_counts.get(name, 0) + 1
+
+                    frame_n += 1
+                    prog = min(frame_n / max(total_frames, 1), 1.0)
+                    progress.progress(prog)
+                    status.markdown(f"`Frame {frame_n}/{total_frames}`")
+
+                cap.release()
+                out.release()
+                progress.progress(1.0)
+                status.markdown("`Processing complete`")
+
+                with open(tmp_out_path, 'rb') as f:
+                    st.download_button(
+                        "Download annotated video",
+                        f, file_name="mesad_output.mp4",
+                        mime="video/mp4"
+                    )
+
+                if action_counts:
+                    st.markdown('<div class="section-label" style="margin-top:1rem">Action frequency</div>',
+                                unsafe_allow_html=True)
+                    sorted_actions = sorted(action_counts.items(),
+                                           key=lambda x: x[1], reverse=True)
+                    max_count = sorted_actions[0][1]
+                    for name, count in sorted_actions[:10]:
+                        bar_w = int(count / max_count * 100)
+                        st.markdown(f"""
+                        <div class="class-row">
+                            <span class="cls-name">{name}</span>
+                            <div class="conf-bar-wrap">
+                                <div class="conf-bar" style="width:{bar_w}%"></div>
+                            </div>
+                            <span class="conf-val">{count}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                os.unlink(tmp_in_path)
+
+# ============================================================
+# TAB 3 — Batch folder
+# ============================================================
+with tab3:
+    st.markdown('<div class="section-label">Batch inference</div>',
+                unsafe_allow_html=True)
+
+    folder_path = st.text_input(
+        "Path to folder of images",
+        placeholder="e.g. C:/mesad/val/images"
+    )
+    max_images = st.slider("Max images to process", 5, 100, 20)
+
+    if folder_path and st.button("Run batch inference"):
+        if not os.path.exists(folder_path):
+            st.error(f"Folder not found: {folder_path}")
+        else:
+            images = [f for f in os.listdir(folder_path)
+                      if f.lower().endswith(('.jpg','.jpeg','.png'))][:max_images]
+
+            if not images:
+                st.warning("No images found in folder")
+            else:
+                progress = st.progress(0)
+                results_list = []
+
+                for i, img_name in enumerate(images):
+                    img_path = os.path.join(folder_path, img_name)
+                    img_bgr  = cv2.imread(img_path)
+                    results  = model.predict(img_bgr, conf=conf_thresh,
+                                             iou=iou_thresh, verbose=False)
+                    detections = [
+                        f"{CLASS_NAMES[int(b.cls[0])] if int(b.cls[0]) < len(CLASS_NAMES) else int(b.cls[0])} "
+                        f"({float(b.conf[0]):.2f})"
+                        for b in results[0].boxes
+                    ]
+                    results_list.append({
+                        'image'      : img_name,
+                        'detections' : len(results[0].boxes),
+                        'actions'    : ', '.join(detections) if detections else '—'
+                    })
+                    progress.progress((i+1) / len(images))
+
+                progress.progress(1.0)
+                st.success(f"Processed {len(images)} images")
+
+                import pandas as pd
+                df = pd.DataFrame(results_list)
+                st.dataframe(df, use_container_width=True)
+
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    "Download results CSV",
+                    csv, file_name="mesad_batch_results.csv",
+                    mime="text/csv"
+                )'''

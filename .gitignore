@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.dll
+*.so
+*.dylib
+
+# Virtual environments
+venv/
+env/
+.venv/
+measd/
+
+# Site-packages (don’t commit installed libraries)
+Lib/
+Scripts/
+bin/
+include/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Data files
+*.csv
+*.tsv
+*.json
+*.xml
+
+# Large ML model files (keep them out of GitHub)
+*.h5
+*.onnx
+*.pkl
+*.joblib
+
+# Torch / TensorFlow model weights
+*.pth
+*.pt
+
+# Images, figures, and outputs (optional)
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# OS-specific files
+.DS_Store
+Thumbs.db
